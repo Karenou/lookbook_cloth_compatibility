@@ -2,7 +2,6 @@ from __future__ import print_function
 import argparse
 import os
 from PIL import Image
-from matplotlib.cbook import file_requires_unicode
 import pandas as pd
 import h5py
 
@@ -36,7 +35,7 @@ parser.add_argument('--prein', dest='prein', action='store_true', default=False,
                     help='To initialize masks to be disjoint')
 parser.add_argument('--rand_typespaces', action='store_true', default=False,
                     help='randomly assigns comparisons to type-specific embeddings where #comparisons < #embeddings')
-parser.add_argument('--num_rand_embed', type=int, default=1, metavar='N',
+parser.add_argument('--num_rand_embed', type=int, default=66, metavar='N',
                     help='number of random embeddings when rand_typespaces=True')
 parser.add_argument('--l2_embed', dest='l2_embed', action='store_true', default=False,
                     help='L2 normalize the output of the type specific embeddings')
@@ -71,14 +70,11 @@ parser.add_argument('--output_hdf5', type=str,
                     help='path to save embedding vector as hdf5 file')
 
 
-CATEGORY_MAPPING = {0: 'background', 1: 'upper body', 2: 'lower body', 3: 'full body'}
-
-
-def filter_multiple_items(df):
+def filter_images(df):
     """
-    this function filter the dataframe with rows whose number detected items is larger then 1
+    this function filter images whose number of detected items is at least 1
     """
-    df = df[df["segmentation_cnt"] > 1]
+    df = df[df["segmentation_cnt"] > 0]
     df = df.reset_index(drop=True)
     return df
 
@@ -90,15 +86,13 @@ class ImageDataset(Dataset):
         self.transform =  transforms.Compose([
             transforms.Resize(112),
             transforms.CenterCrop(112),
-            # transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225])
-        ])
-        # only read images if detected more than 1 items        
+        ])     
         self.mapping = pd.read_csv(csv_path)
-        self.mapping = filter_multiple_items(self.mapping)
+        self.mapping = filter_images(self.mapping)
 
         if resume_idx > 0:
             self.mapping = self.mapping[resume_idx:].reset_index(drop=True)
@@ -111,7 +105,6 @@ class ImageDataset(Dataset):
         look_id = self.mapping["look_id"][index]
 
         # create a (3, 3, 112, 112) tensor to store the segments
-        # if only two items are detected, leave one dimension filled with 0
         # use a marker to record which dimension is non-zero
         marker = torch.zeros(3)
         imgs = torch.zeros((3, 3, 112, 112))
@@ -123,7 +116,6 @@ class ImageDataset(Dataset):
                 img = Image.open(path)
                 img = self.transform(img)
                 imgs[idx, :, :, :] = img
-        # print(user_id, look_id, marker)
         return user_id, look_id, marker, imgs
     
 
@@ -137,6 +129,32 @@ def write_to_hdfs(file, embed_vec, user_id, look_id):
     return file
 
 
+def compute_score(embeddings):
+    """
+    compute compatibility score for embedding vectors, shape (n_vector, embed_dim)
+    if only two vectors: use pairwise two-norm
+    if three vectors: use average of pairwise two-norm
+    """
+    def compute_distance(v1, v2):
+        distance_vec = torch.nn.functional.pairwise_distance(
+            v1.unsqueeze(0), v2.unsqueeze(0), p=2)
+        return distance_vec
+
+    if embeddings.shape[0] == 2:
+        # shape (1, 67)
+        outfit_vec = compute_distance(embeddings[0], embeddings[1])
+        score = torch.norm(outfit_vec)
+    else:
+        outfit_vec_1 = compute_distance(embeddings[0], embeddings[1])
+        outfit_vec_2 = compute_distance(embeddings[0], embeddings[2])
+        outfit_vec_3 = compute_distance(embeddings[1], embeddings[2])
+        # shape (3, 67)
+        outfit_vec = torch.concat([outfit_vec_1, outfit_vec_2, outfit_vec_3])
+        score = torch.norm(torch.mean(outfit_vec, dim=0))
+    score = score.cpu().detach().numpy()
+    return score
+
+
 if __name__ == "__main__":
     global args
     args = parser.parse_args()
@@ -146,6 +164,7 @@ if __name__ == "__main__":
         torch.cuda.manual_seed(args.seed)
 
     dataset = ImageDataset(args.base_path, args.segmentation_csv)
+    print("There are %d images" % len(dataset))
 
     kwargs = {'num_workers': 2, 'pin_memory': True} if args.cuda else {}
     test_loader = DataLoader(
@@ -155,7 +174,7 @@ if __name__ == "__main__":
 
     # load model
     model = Resnet_18.resnet18(pretrained=True, embedding_size=args.dim_embed)
-    # number of type spaces, set to 4
+    # number of type spaces
     csn_model = TypeSpecificNet(args, model, args.num_rand_embed)
     criterion = torch.nn.MarginRankingLoss(margin=args.margin)
 
@@ -178,7 +197,7 @@ if __name__ == "__main__":
 
     cudnn.benchmark = True
 
-    print("Predict compatability scores")
+    print("Start embedding")
     embed_idx_mapping = []
     scores = []
 
@@ -199,26 +218,24 @@ if __name__ == "__main__":
         n_items = 0
         for item_id in range(3):
             if marker[item_id] == 1:
-                # embedding shape: (1, num_rand_embed + 1, 64), the last dimension in the second axis is embedded_x
+                # embedding shape: (1, num_rand_embed + 1, 64)
+                # the last dimension in the second axis is general embeddeding, while the previous is type-specific embedding
                 embedding = tnet.embeddingnet(imgs[item_id].unsqueeze(axis=0)).data
-                # now shape [1, dim_embed]
-                embedding = embedding[:, args.num_rand_embed, :]
                 embeddings.append(embedding)
-
                 embed_idx_mapping.append([user_id.item(), look_id.item(), item_id+1, n_items])
                 n_items += 1
 
         # write the embeded vectors to hdf5 with path: 'user_id/look_id'
+        # shape: (n_items, num_rand_embed + 1, 64)
         embeddings = torch.concat(embeddings)
         embed_hdf5 = write_to_hdfs(embed_hdf5, embeddings, user_id.item(), look_id.item())
 
-        # # !!!!!if there are 2 or 3 segments, how to measure the distance?
-        # outfit_vec = torch.nn.functional.pairwise_distance(
-        #     embeddings[0].unsqueeze(0), embeddings[1].unsqueeze(0), p=2)
-        # score = torch.norm(outfit_vec)
-        # scores.append([user_id, look_id, score.cpu().detach().numpy()])
-
-       
+        # measure compatibility score for multiple items, otherwise leave it blank
+        if embeddings.shape[0] > 1:
+            score = compute_score(embeddings)
+            scores.append([user_id.item(), look_id.item(), score])
+        else:
+            scores.append([user_id.item(), look_id.item(), None])
 
     print("Save embedding vectors to hdf5")
     embed_hdf5.close()
@@ -228,10 +245,11 @@ if __name__ == "__main__":
     mapping_df = pd.DataFrame(embed_idx_mapping, columns=["user_id", "look_id", "item_id", "idx"])
     mapping_df.to_csv(args.output_mapping, index=False)
 
-    # print("Save compatability scores")
-    # score_df = pd.DataFrame(scores, columns=["user_id", "look_id", "compatibility_score"])
-    # score_df.to_csv(args.output_score, index=False)
-    # break
+    print("Save compatability scores")
+    score_df = pd.DataFrame(scores, columns=["user_id", "look_id", "compatibility_score"])
+    score_df.to_csv(args.output_score, index=False)
+        
+        
     
 
 
