@@ -48,10 +48,16 @@ The code is forked from [fashion-compatability](https://github.com/mvasil/fashio
 
 First, need to download the pretrain model [here](https://drive.google.com/file/d/1JrRgM_EaLQqLw1CNjM65XnTm9rZyLRgj/view), and put it under `fashion-compatibility/model/model_best.pth.tar`
 
-The embeded vectors are saved in hdf5 format with hierarchy being `str(user_id)/str(look_id)`. The embeded dimension is 64 for each detected item. To track the hierarchy in hdf5 file, a mapping csv is saved in `data/embed_item_id_mapping.csv`, which gives the mapping from look_id to item_id in `data/cloth_images` to idx in embeded vectors in hdf5. 
+The embeded vectors are saved in `data/embed_vector.h5` in group format of `str(user_id)/str(look_id)`. Since the pretrained model uses 66 type spaces to embed the item, plus a general embedding space. The embeded dimension is （67, 64) for each detected item.  To track the hierarchy in hdf5 file, a mapping csv is saved in `data/embed_item_id_mapping.csv`, which gives the mapping from look_id to item_id in `data/cloth_images` to idx in embeded vectors in hdf5. 
+
+The compatibility score is saved in `data/compatibility_score.csv`
 
 Note that the batch_size must be set to 1 for calculating the compatibility score for all items under a single look_id image.
 
 ```
 python fashion-compatibility/predict.py --resume="fashion-compatibility/model/model_best.pth.tar" --batch_size=1 --dim_embed=64 --base_path="data/cloth_images" --segmentation_csv="data/segmentation_output.csv" --output_score="data/compatability_score.csv" --output_mapping="data/embed_item_id_mapping.csv" --output_hdf5="data/embed_vector.h5"
 ```
+
+## Step 4: Compute cloth item distinctiveness score
+
+Definition of distinctiveness: how different this cloth item is from other items within the same category and posted in the latest 3 months (fashion trend varies across time). The difference is measured by summation of pairwise distance from other items within the cluster, and further normalized by the cluster compactness.
