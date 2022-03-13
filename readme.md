@@ -60,4 +60,8 @@ python fashion-compatibility/predict.py --resume="fashion-compatibility/model/mo
 
 ## Step 4: Compute cloth item distinctiveness score
 
-Definition of distinctiveness: how different this cloth item is from other items within the same category and posted in the latest 3 months (fashion trend varies across time). The difference is measured by summation of pairwise distance from other items within the cluster, and further normalized by the cluster compactness.
+This step uses the item embedding results from step 3.
+
+Definition of distinctiveness: how different this cloth item is from other items within the same category and posted in the latest 3 months (fashion trend varies across time). 
+
+The difference is measured by summation of pairwise distance from other items within the cluster, and further normalized by the cluster compactness.
