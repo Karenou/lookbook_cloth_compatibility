@@ -34,14 +34,13 @@ def read_embed_vector(h5_path, df):
 
 def compute_compactness(matrix):
     """
-    compute the cluster compactness using Frobenius norm
+    compute the cluster compactness using sse
     cluster center: median
     @param matrix: a matrix of embedding vectors with shape (n, 67, 64), reshape to (n, 67*64)
     """
     cluster_center = np.median(matrix, axis=0, keepdims=True)
-    # Frobenius norm
-    fro_norm = np.linalg.norm(matrix - cluster_center, ord='fro')
-    return fro_norm
+    sse = np.sum(np.power(np.sum(np.power(matrix - cluster_center, 2), axis=1), 0.5))
+    return sse
 
 def compute_distinctiveness(matrix):
     """
@@ -107,7 +106,6 @@ if __name__ == "__main__":
                 scores = score
             else:
                 scores = pd.concat([scores, score], axis=0)
-
 
     # average the score by user_id and look_id
     print("save scores to csv")
