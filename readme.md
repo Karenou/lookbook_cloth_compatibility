@@ -38,6 +38,8 @@ Download the pretrain model [here](https://drive.google.com/file/d/1mhF3yqd7R-Uj
 python cloth-segmentation/main.py --batch_size=4 --base_path="data/human_images" --mapping_path="data/look_mapping_1.csv" --model_path="cloth-segmentation/assets/model.pth" --save_path="data/cloth_images"
 ```
 
+There are 176,505 images with 2 detected items, and 83,596 images with 3 detected items. We only embed and predict the compatibility scores for images containing multiple detected items.
+
 ## Step 3: Embed cloth segment images into vectors and compute compatibility scores
 
 - Reference
@@ -48,16 +50,49 @@ The code is forked from [fashion-compatability](https://github.com/mvasil/fashio
 
 First, need to download the pretrain model [here](https://drive.google.com/file/d/1JrRgM_EaLQqLw1CNjM65XnTm9rZyLRgj/view), and put it under `fashion-compatibility/model/model_best.pth.tar`
 
-The embeded vectors are saved in `data/embed_vector.h5` in group format of `str(user_id)/str(look_id)`. Since the pretrained model uses 66 type spaces to embed the item, plus a general embedding space. The embeded dimension is （67, 64) for each detected item.  To track the hierarchy in hdf5 file, a mapping csv is saved in `data/embed_item_id_mapping.csv`, which gives the mapping from look_id to item_id in `data/cloth_images` to idx in embeded vectors in hdf5. 
+The embeded vectors are saved in hdf5 format with hierarchy being `str(user_id)/str(look_id)`. The embeded dimension is 64 for each detected item. To track the hierarchy in hdf5 file, a mapping csv is saved in `data/embed_item_id_mapping.csv`, which gives the mapping from look_id to item_id in `data/cloth_images` to idx in embeded vectors in hdf5. 
 
-The compatibility score is saved in `data/compatibility_score.csv`
-
-Note that the batch_size must be set to 1 for calculating the compatibility score for all items under a single look_id image.
+Note that the batch_size must be set to 1 for calculating the compatibility score for multiple items in a single look_id image.
 
 ```
 python fashion-compatibility/predict.py --resume="fashion-compatibility/model/model_best.pth.tar" --batch_size=1 --dim_embed=64 --base_path="data/cloth_images" --segmentation_csv="data/segmentation_output.csv" --output_score="data/compatability_score.csv" --output_mapping="data/embed_item_id_mapping.csv" --output_hdf5="data/embed_vector.h5"
 ```
 
+
 ## Step 4: Compute cloth item distinctiveness score
 
-Definition of distinctiveness: how different this cloth item is from other items within the same category and posted in the latest 3 months (fashion trend varies across time). The difference is measured by summation of pairwise distance from other items within the cluster, and further normalized by the cluster compactness.
+- Definition of a cluster
+
+Items within the same cloth category (upper body, lower body or full body) and are posted in the latest three months. 
+
+For example, when computing the distinctiveness of upper body cloth items posted in Mar 2018, we choose the upper body cloth items posted from Jan to Mar 2018 to form the cluster.
+
+
+- Measure of cluster center
+
+Median of embedding vectors of all items within the cluster.
+
+- Definition of cluster compactness 
+
+Summation of Euclidean distance between embedding vector of each item in the cluster and the cluster center.
+
+- Definition of item distinctiveness
+
+How different this cloth item is from other items within the cluster.
+
+The difference is measured by summation of pairwise Euclidean distance between this item from other items within the cluster, and further normalized by the cluster compactness.
+
+
+- How to run the program
+
+The code is written in `cloth_distinctiveness.py`. We need to load the embedding vector h5 file - `data/embed_vector.h5`, the mapping csv from h5 file to the item_id - `data/embed_item_id_mapping.csv` and the look csv - `data/look.csv`.
+
+The program will first loop each of the item category, and then a second loop of the latest month. For each latest month, a cluster is formed by including the items posted in the past 3 months, and distinctiveness of items posted in the latest month are computed. 
+
+Run the following command, the output score is saved in `data/distinctiveness_score.csv`
+
+```
+python cloth_distinctiveness.py --embed_vector="data/embed_vector.h5" --embed_mapping="data/embed_item_id_mapping.csv"
+--look="data/look.csv"
+--save_path="data/distinctiveness_score.csv"
+```
