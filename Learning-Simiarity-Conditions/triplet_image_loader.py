@@ -4,6 +4,7 @@ import os.path
 import torch.utils.data
 from sklearn.metrics import roc_auc_score, roc_curve, precision_recall_curve
 import numpy as np
+np.random.seed(1)
 import json
 import matplotlib.pyplot as plt
 
