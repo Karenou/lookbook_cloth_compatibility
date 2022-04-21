@@ -105,9 +105,7 @@ def accuracy(pos_samples, neg_samples):
     margin = 0
     pred = (pos_samples - neg_samples - margin).cpu().data
     acc = (pred > 0).sum() * 1.0 / pos_samples.size()[0]
-    acc = torch.from_numpy(np.array([acc], np.float32))
-    if is_cuda:
-        acc = acc.cuda()
+    return acc
 
 def make_fc_1d(f_in, f_out):
     return nn.Sequential(nn.Linear(f_in, f_out),
@@ -118,6 +116,7 @@ def make_fc_1d(f_in, f_out):
 class EmbedBranch(nn.Module):
     def __init__(self, feat_dim, embedding_dim):
         super(EmbedBranch, self).__init__()
+        self.embedding_dim = embedding_dim
         self.fc1 = make_fc_1d(feat_dim, embedding_dim)
         self.fc2 = nn.Linear(embedding_dim, embedding_dim)
 
@@ -125,8 +124,11 @@ class EmbedBranch(nn.Module):
         x = self.fc1(x)
         x = self.fc2(x)
 
-        # L2 normalize each feature vector
+        # L2 normalize each feature vector, norm.shape = batch_size
         norm = torch.norm(x, p=2, dim=1) + 1e-10
+        # when x.shape[0] < batch size, need to unsqueeze norm at axis=1, otherwise cannot expand size
+        if norm.shape[0] != self.embedding_dim:
+            norm = torch.unsqueeze(norm, axis=1)
         x = x / norm.expand_as(x)
         return x
 
@@ -179,13 +181,13 @@ class Tripletnet(nn.Module):
         """ x: Anchor image,
             y: Distant (negative) image,
             z: Close (positive) image,
-            in TrainData type
+            already in image type
             c: Integer indicating according to which notion of similarity images are compared
         """
         # general embedding after resnet-18 
-        general_x = self.embeddingnet.embeddingnet(x.images)
-        general_y = self.embeddingnet.embeddingnet(y.images)
-        general_z = self.embeddingnet.embeddingnet(z.images)
+        general_x = self.embeddingnet.embeddingnet(x)
+        general_y = self.embeddingnet.embeddingnet(y)
+        general_z = self.embeddingnet.embeddingnet(z)
 
         # l2-normalize embeddings as input to conditional weight branch
         norm = torch.norm(general_x, p=2, dim=1) + 1e-10
@@ -298,7 +300,7 @@ class Tripletnet(nn.Module):
             z: Close (positive) data
             in TrainData type
         """
-        acc, loss_triplet, loss_sim_i, loss_mask, loss_embed, general_x, general_y, general_z = self.image_forward(x, y, z)
+        acc, loss_triplet, loss_sim_i, loss_mask, loss_embed, general_x, general_y, general_z = self.image_forward(x.images, y.images, z.images)
         loss_sim_t, desc_x, desc_y, desc_z = self.text_forward(x, y, z)
         loss_vse_x = self.calc_vse_loss(desc_x, general_x, general_y, general_z, x.has_text)
         loss_vse_y = self.calc_vse_loss(desc_y, general_y, general_x, general_z, y.has_text)
