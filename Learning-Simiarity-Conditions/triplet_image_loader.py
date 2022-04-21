@@ -145,26 +145,28 @@ class TripletPolyvoreImageLoader(torch.utils.data.Dataset):
         self.transform = transform
         self.triplet_path = "%s/%s_%s.txt" % (triplet_path, polyvore_split, split)
         self.rootdir = os.path.join(datadir, 'polyvore_outfits', polyvore_split)
+        self.text_feat_dim = text_dim
         
-        outfit_data = json.load(open(os.path.join(self.rootdir, '%s.json' % split), 'r'))
-        self.im2type, self.category2ims, self.imnames, self.im2index, self.id2im = self.load_dict(outfit_data, meta_data)
-        
+        print("Load outfit data")
+        outfit_data = json.load(open(os.path.join(self.rootdir, '%s.json' % split), 'r'))   
         
         if self.is_train:
-            self.desc2vecs, self.im2desc = self.load_text_feature(text_dim, meta_data)
+            self.im2type, self.category2ims, self.imnames = self.load_train_dict(outfit_data, meta_data)
+            # huge IO time in loading text feature
+            self.desc2vecs, self.im2desc = self.load_text_feature(meta_data)
 
             # load tripelet
             if os.path.exists(self.triplet_path):
                 self.triplets = self.load_triplet(num_triplets)
             else:
                 # prepare triplet
-                self.triplets = []
+                triplets = []
                 i = 0
                 for outfit in outfit_data:
                     if i % 1000 == 0:
                         print("  Number of outfits: %d" % i)
                     
-                    if num_triplets is not None and len(self.triplets) > num_triplets:
+                    if num_triplets is not None and len(triplets) > num_triplets:
                         break
 
                     items = outfit['items']
@@ -180,23 +182,28 @@ class TripletPolyvoreImageLoader(torch.utils.data.Dataset):
                             condition = np.random.random_integers(low=conditions[0], high=conditions[-1], size=1)[0]
                             
                             # anchor, far, close 
-                            self.triplets.append([anchor_im, neg_im, pos_im, condition])
+                            triplets.append([anchor_im, neg_im, pos_im, condition])
 
                     i += 1
                 
-                self.save_triplet()
+                self.save_triplet(triplets)
+                self.triplets = triplets
+
+            print("%s set data size: %d"  % (split, len(self.triplets)))
         else:
+            self.imnames, self.im2index, self.id2im = self.load_test_dict(outfit_data)
             # pull the two task's questions for test and val splits
             fn = os.path.join(self.rootdir, 'fill_in_blank_%s.json' % split)
             self.fitb_questions = load_fitb_questions(fn, self.im2index, self.id2im)
             fn = os.path.join(self.rootdir, 'compatibility_%s.txt' % split)
             self.compatibility_questions = load_compatibility_questions(fn, self.im2index, self.id2im)
+            print("%s set data size: %d" % (split, len(self.imnames)))
 
-    def load_dict(self, outfit_data, meta_data):
+    def load_train_dict(self, outfit_data, meta_data):
+        print("Load dict")
         im2type = {}
         category2ims = {}
         imnames = set()
-        id2im = {}
         for outfit in outfit_data:
             outfit_id = outfit['set_id']
             for item in outfit['items']:
@@ -211,6 +218,20 @@ class TripletPolyvoreImageLoader(torch.utils.data.Dataset):
                     category2ims[category][outfit_id] = []
 
                 category2ims[category][outfit_id].append(im)
+                imnames.add(im)
+
+        imnames = list(imnames)
+
+        return im2type, category2ims, imnames
+
+    def load_test_dict(self, outfit_data):
+        print("Load dict")
+        imnames = set()
+        id2im = {}
+        for outfit in outfit_data:
+            outfit_id = outfit['set_id']
+            for item in outfit['items']:
+                im = item['item_id']
                 id2im['%s_%i' % (outfit_id, item['index'])] = im
                 imnames.add(im)
 
@@ -220,13 +241,14 @@ class TripletPolyvoreImageLoader(torch.utils.data.Dataset):
         for index, im in enumerate(imnames):
             im2index[im] = index
 
-        return im2type, category2ims, imnames, im2index, id2im
+        return imnames, im2index, id2im       
 
-    def load_text_feature(self, text_dim, meta_data):
+    def load_text_feature(self, meta_data):
         """
         load text feature and description
         return desc2vecs, im2desc
         """
+        print("Load text features")
         desc2vecs = {}
         featfile = os.path.join(self.rootdir, 'train_hglmm_pca6000.txt')
         with open(featfile, 'r') as f:
@@ -236,9 +258,9 @@ class TripletPolyvoreImageLoader(torch.utils.data.Dataset):
                     continue
 
                 vec = line.split(',')
-                label = ','.join(vec[:-text_dim])
-                vec = np.array([float(x) for x in vec[-text_dim:]], np.float32)
-                assert (len(vec) == text_dim)
+                label = ','.join(vec[:-self.text_feat_dim])
+                vec = np.array([float(x) for x in vec[-self.text_feat_dim:]], np.float32)
+                assert (len(vec) == self.text_feat_dim)
                 desc2vecs[label] = vec
 
         im2desc = {}
@@ -254,28 +276,33 @@ class TripletPolyvoreImageLoader(torch.utils.data.Dataset):
             if desc and desc in desc2vecs:
                 im2desc[im] = desc
 
+        print("%d items have text features" % len(desc2vecs.keys()))
         return desc2vecs, im2desc
 
     def load_triplet(self, num_triplets):
         """
         load triplet to txt, use subset of triplets
         """
-        self.triplets = []
+        print("load triplets from %s" % self.triplet_path)
+        triplets = []
         with open(self.triplet_path, "r") as f:
             lines = f.readlines()
             for line in lines:
-                self.triplets.append((line.split()[0], line.split()[1], line.split()[2], line.split()[3]))
-        f.close()
+                triplets.append((line.split()[0], line.split()[1], line.split()[2], line.split()[3]))
 
+        np.random.shuffle(triplets)
         if num_triplets is not None:
-            self.triplets = self.triplets[:num_triplets]
+            triplets = triplets[:num_triplets]
+        
+        return triplets
 
-    def save_triplet(self):
+    def save_triplet(self, triplets):
         """
         save triplets to txt
         """
+        print("save triplets to %s" % self.triplet_path)
         with open(self.triplet_path, "w") as f:
-            for row in self.triplets:
+            for row in triplets:
                 line = " ".join(map(str, row))
                 f.write(line + "\n")
             f.close()
@@ -299,8 +326,7 @@ class TripletPolyvoreImageLoader(torch.utils.data.Dataset):
             has_text = 0.
 
         has_text = np.float32(has_text)
-        item_type = self.im2type[image_id]
-        return img, text_features, has_text, item_type
+        return img, text_features, has_text
 
     def sample_negative(self, item_id, item_type):
         """ Returns a randomly sampled item from a different set
@@ -329,9 +355,9 @@ class TripletPolyvoreImageLoader(torch.utils.data.Dataset):
         if self.is_train:
             # load anchor, neg, pos image and text feature if possible
             anchor_im, neg_im, pos_im, condition = self.triplets[index]
-            img1, desc1, has_text1, _ = self.load_train_item(anchor_im)
-            img2, desc2, has_text2, _ = self.load_train_item(neg_im)
-            img3, desc3, has_text3, _ = self.load_train_item(pos_im)
+            img1, desc1, has_text1 = self.load_train_item(anchor_im)
+            img2, desc2, has_text2 = self.load_train_item(neg_im)
+            img3, desc3, has_text3 = self.load_train_item(pos_im)
 
             return img1, desc1, has_text1, img2, desc2, has_text2, img3, desc3, has_text3, condition
         else:
@@ -344,7 +370,10 @@ class TripletPolyvoreImageLoader(torch.utils.data.Dataset):
             return img1
 
     def __len__(self):
-        return len(self.triplets)
+        if self.is_train:
+            return len(self.triplets)
+
+        return len(self.imnames)
 
     def test_compatibility(self, embeds, plot=False, save_path=None, split=None):
         """ Returns the area under a roc curve for the compatibility

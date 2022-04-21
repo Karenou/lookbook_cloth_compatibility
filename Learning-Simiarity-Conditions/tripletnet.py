@@ -134,7 +134,7 @@ class EmbedBranch(nn.Module):
 # with VSE and Sim loss
 class Tripletnet(nn.Module):
     def __init__(self, args, embeddingnet, num_concepts, text_dim, criterion):
-        super(CS_Tripletnet, self).__init__()
+        super(Tripletnet, self).__init__()
         self.embeddingnet = embeddingnet
         self.num_concepts = num_concepts
         self.text_branch = EmbedBranch(text_dim, args.dim_embed)
