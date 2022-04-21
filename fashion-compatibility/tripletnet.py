@@ -129,7 +129,6 @@ class Tripletnet(nn.Module):
     def calc_vse_loss(self, desc_x, general_x, general_y, general_z, has_text):
         """ Both y and z are assumed to be negatives because they are not from the same 
             item as x
-
             desc_x: Anchor language embedding
             general_x: Anchor visual embedding
             general_y: Visual embedding from another item from input triplet

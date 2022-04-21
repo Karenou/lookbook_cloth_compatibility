@@ -2,14 +2,13 @@ from PIL import Image
 import os
 import os.path
 import torch.utils.data
-import torchvision.transforms as transforms
 import numpy as np
 import json
 import torch
 import pickle
-import h5py
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, roc_curve, precision_recall_curve
 from torch.autograd import Variable
+import matplotlib.pyplot as plt
 
 
 def default_image_loader(path):
@@ -255,7 +254,7 @@ class TripletImageLoader(torch.utils.data.Dataset):
 
         return self.typespaces[query]
 
-    def test_compatibility(self, embeds, metric):
+    def test_compatibility(self, embeds, metric, plot=False, save_path=None, split=None):
         """ Returns the area under a roc curve for the compatibility
             task
 
@@ -264,6 +263,9 @@ class TripletImageLoader(torch.utils.data.Dataset):
             metric: a function used to score the elementwise product
                     of a pair of embeddings, if None euclidean
                     distance is used
+            plot_roc: whether to plot the roc curve
+            save_path: path to save the roc plot
+            split: which split of polyvore outfit, disjoint or nondisjoint
         """
         scores = []
         labels = np.zeros(len(self.compatibility_questions), np.int32)
@@ -291,13 +293,53 @@ class TripletImageLoader(torch.utils.data.Dataset):
             outfit_score /= num_comparisons
             scores.append(outfit_score)
 
+        # larger scores, less compatibility, thus use 1 - scores as predicted prob
         scores = torch.cat(scores).squeeze().cpu().numpy()
-        # scores = np.load('feats.npy')
-        # print(scores)
-        # assert(False)
-        # np.save('feats.npy', scores)
         auc = roc_auc_score(labels, 1 - scores)
+
+        if plot:
+            self.plot_roc_curve(labels, 1 - scores, auc, save_path, split)
+            self.plot_pr_curve(labels, 1 - scores, save_path, split)
+
         return auc
+
+    def plot_roc_curve(self, label, score, auc, save_path, split):
+        """
+        plot roc curve
+        """
+        fpr, tpr, _ = roc_curve(label, score)
+        plt.figure(figsize=(8,8))
+        plt.plot(fpr, tpr, color = "darkorange", lw=2, label="ROC curve (auc = %.2f)" % auc)
+        plt.plot([0,1], [0,1], color="navy", lw=2, linestyle="--")
+        plt.xlim([0, 1])
+        plt.ylim([0,1])
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title(
+            "ROC Curve of Pretrained Model's Compatibility \n Prediction on %s Polyvore Outfit Dataset" % split
+        )
+        plt.legend(loc="lower right")
+        plt.savefig(os.path.join(save_path, "polyvore_outfit_%s_roc.eps" % split), format="eps")
+        plt.close()
+
+    def plot_pr_curve(self, label, score, save_path, split):
+        """
+        plot precision-recall curve
+        """
+        precision, recall, _ = precision_recall_curve(label, score)
+        plt.figure(figsize=(8,8))
+        plt.plot(recall, precision, color = "darkorange", lw=2, label="Precision-Recall curve")
+        plt.xlim([0, 1])
+        plt.ylim([0,1])
+        plt.xlabel("Recall")
+        plt.ylabel("Precision")
+        plt.title(
+            "PR Curve of Pretrained Model's Compatibility \n Prediction on %s Polyvore Outfit Dataset" % split
+        )
+        plt.legend(loc="lower right")
+        plt.savefig(os.path.join(save_path, "polyvore_outfit_%s_pr.eps" % split), format="eps")
+        plt.close()
+
 
     def test_fitb(self, embeds, metric):
         """ Returns the accuracy of the fill in the blank task
