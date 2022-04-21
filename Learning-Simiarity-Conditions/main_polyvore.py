@@ -13,6 +13,7 @@ from tripletnet import Tripletnet
 import json
 import Resnet_18
 from csn import ConditionalSimNet
+import pandas as pd
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -20,23 +21,27 @@ torch.autograd.set_detect_anomaly(True)
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
 parser.add_argument('--datadir', type=str, default="/home/juneshi/Desktop/lookbook/fashion-compatibility/data", 
                     metavar='N', help='data directory of polyvore outfit data')
+parser.add_argument('--triplet_path', type=str, default="/home/juneshi/Desktop/lookbook/Learning-Similarity-Conditions/data/polyvore_triplets", 
+                    metavar='N', help='path to save and load triplet')
+
 parser.add_argument('--polyvore_split', default='nondisjoint', type=str,
                     help='specifies the split of the polyvore data (either disjoint or nondisjoint)')
-parser.add_argument('--conditions', nargs='*', type=int,
-                    help='Set of similarity notions')
-parser.add_argument('--num_concepts', type=int, default=5, metavar='N',
-                    help='number of random embeddings when rand_typespaces=True')
 parser.add_argument('--resume', default='', type=str,
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--epochs', type=int, default=10, metavar='N',
                     help='number of epochs to train (default: 200)')
 parser.add_argument('--model_path', type=str, default="model", metavar='N',
                     help='path to save model')
-parser.add_argument('--triplet_path', type=str, default="data/polyvore_triplets", metavar='N',
-                    help='path to save and load triplet')
-parser.add_argument('--num_traintriplets', type=int, default=500000, metavar='N',
+parser.add_argument('--log_path', type=str, default="train_log.csv", metavar='N',
+                    help='path to save training history')
+
+parser.add_argument('--num_traintriplets', type=int, default=200000, metavar='N',
                     help='how many unique training triplets (default: 100000)')
 
+parser.add_argument('--conditions', nargs='*', type=int,
+                    help='Set of similarity notions')
+parser.add_argument('--num_concepts', type=int, default=5, metavar='N',
+                    help='number of random embeddings when rand_typespaces=True')
 parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N',
@@ -168,13 +173,24 @@ def main():
     n_parameters = sum([p.data.nelement() for p in tnet.parameters()])
     print('  + Number of params: {}'.format(n_parameters))
 
+    history = None
+    print("Starting training")
     for epoch in range(args.start_epoch, args.epochs + 1):
         # update learning rate
         adjust_learning_rate(optimizer, epoch)
+
         # train for one epoch
-        train(train_loader, tnet, optimizer, epoch)
+        log = train(train_loader, tnet, optimizer, epoch)
+
+        # update log
+        log_df = pd.DataFrame.from_dict(log, orient="columns")
+        if history is None:
+            history = log_df
+        else:
+            history = pd.concat([history, log_df], axis=0)
+
         # evaluate on validation set
-        acc = test(val_loader, tnet, plot_roc=False, save_path=None)
+        acc = test(val_loader, tnet)
 
         # remember best acc and save checkpoint
         is_best = acc > best_acc
@@ -185,9 +201,11 @@ def main():
             'best_prec1': best_acc,
         }, is_best)
 
-    checkpoint = torch.load('runs/%s/'%(args.name) + 'model_best.pth.tar')
+    history.to_csv(args.log_path, index=False)
+
+    checkpoint = torch.load('%s/model_best.pth.tar' % args.model_path)
     tnet.load_state_dict(checkpoint['state_dict'])
-    test_acc = test(test_loader, tnet, criterion, 1)
+    test_acc = test(test_loader, tnet)
 
 
 def train(train_loader, tnet, optimizer, epoch):
@@ -195,11 +213,12 @@ def train(train_loader, tnet, optimizer, epoch):
     accs = AverageMeter()
     emb_norms = AverageMeter()
     mask_norms = AverageMeter()
+    log = {"epoch": [], "batch_idx": [], "accuracy": [], "avg_accuracy": [], "loss": [], "avg_loss": []}
 
     # switch to train mode
     tnet.train()
     for batch_idx, (img1, desc1, has_text1, img2, desc2, has_text2, img3, desc3, has_text3, condition) in enumerate(train_loader):
-        anchor = TrainData(img1, desc1, has_text1, condition)
+        anchor = TrainData(img1, desc1, has_text1)
         far = TrainData(img2, desc2, has_text2)
         close = TrainData(img3, desc3, has_text3)
         
@@ -225,10 +244,10 @@ def train(train_loader, tnet, optimizer, epoch):
 
         num_items = len(anchor)
         # measure accuracy and record loss
-        losses.update(loss_triplet.data[0], num_items)
-        accs.update(acc.data[0], num_items)
-        emb_norms.update(loss_embed.data[0])
-        mask_norms.update(loss_mask.data[0])
+        losses.update(loss_triplet.item(), num_items)
+        accs.update(acc, num_items)
+        emb_norms.update(loss_embed.item())
+        mask_norms.update(loss_mask.item())
 
         # compute gradient and do optimizer step
         optimizer.zero_grad()
@@ -242,8 +261,17 @@ def train(train_loader, tnet, optimizer, epoch):
                   'Emb_Norm: {:.2f} ({:.2f})'.format(
                 epoch, batch_idx * num_items, len(train_loader.dataset),
                 losses.val, losses.avg, 
-                100. * accs.val, 100. * accs.avg, emb_norms.val, emb_norms.avg))
+                100. * accs.val, 100. * accs.avg, 
+                emb_norms.val, emb_norms.avg))
 
+            log['epoch'].append(epoch)
+            log['batch_idx'].append(batch_idx)
+            log['accuracy'].append(100. * accs.val)
+            log['avg_accuracy'].append(100. * accs.avg)
+            log['loss'].append(losses.val)
+            log['avg_loss'].append(losses.avg)
+    
+    return log
 
 def test(test_loader, tnet, plot_roc=False, save_path=None):
     """
