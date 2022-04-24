@@ -94,6 +94,12 @@ def main():
     if args.cuda:
         torch.cuda.manual_seed(args.seed)
     
+    global conditions
+    if args.conditions is not None:
+        conditions = args.conditions
+    else:
+        conditions = [0,1,2,3,4]
+
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
     transform = transforms.Compose([
@@ -104,36 +110,10 @@ def main():
                             normalize,
                     ])
 
-    global conditions
-    if args.conditions is not None:
-        conditions = args.conditions
-    else:
-        conditions = [0,1,2,3,4]
-    
     fn = os.path.join(args.datadir, 'polyvore_outfits', 'polyvore_item_metadata.json')
     meta_data = json.load(open(fn, 'r'))
 
     kwargs = {'num_workers': 8, 'pin_memory': True} if args.cuda else {}
-    print('Loading Train Dataset')
-    train_loader = torch.utils.data.DataLoader(
-        TripletPolyvoreImageLoader(
-            args.datadir, args.polyvore_split, "train", conditions, meta_data, args.triplet_path, 
-            num_triplets=args.num_traintriplets, transform=transform, text_dim=args.text_dim
-            ), batch_size=args.batch_size, shuffle=True, **kwargs)
-
-    print('Loading Test Dataset')
-    test_loader = torch.utils.data.DataLoader(
-        TripletPolyvoreImageLoader(
-            args.datadir, args.polyvore_split, "test", conditions, meta_data, args.triplet_path, 
-            transform=transform, text_dim=args.text_dim
-            ),  batch_size=args.batch_size, shuffle=False, **kwargs)
-
-    print('Loading Val Dataset')
-    val_loader = torch.utils.data.DataLoader(
-        TripletPolyvoreImageLoader(
-            args.datadir, args.polyvore_split, "valid", conditions, meta_data, args.triplet_path, 
-            transform=transform, text_dim=args.text_dim
-            ), batch_size=args.batch_size, shuffle=False, **kwargs)
     
     model = Resnet_18.resnet18(pretrained=True, embedding_size=args.dim_embed)
     csn_model = ConditionalSimNet(model, n_conditions=args.num_concepts, 
@@ -163,10 +143,32 @@ def main():
 
     cudnn.benchmark = True
 
+    print('Loading Test Dataset')
+    test_loader = torch.utils.data.DataLoader(
+        TripletPolyvoreImageLoader(
+            args.datadir, args.polyvore_split, "test", conditions, meta_data, args.triplet_path, 
+            transform=transform, text_dim=args.text_dim
+            ),  batch_size=args.batch_size, shuffle=False, **kwargs)
+
     if args.test:
         test_acc = test(test_loader, tnet)
         sys.exit()
     
+    print('Loading Train Dataset')
+    train_loader = torch.utils.data.DataLoader(
+        TripletPolyvoreImageLoader(
+            args.datadir, args.polyvore_split, "train", conditions, meta_data, args.triplet_path, 
+            num_triplets=args.num_traintriplets, transform=transform, text_dim=args.text_dim
+            ), batch_size=args.batch_size, shuffle=True, **kwargs)
+
+    
+    print('Loading Val Dataset')
+    val_loader = torch.utils.data.DataLoader(
+        TripletPolyvoreImageLoader(
+            args.datadir, args.polyvore_split, "valid", conditions, meta_data, args.triplet_path, 
+            transform=transform, text_dim=args.text_dim
+            ), batch_size=args.batch_size, shuffle=False, **kwargs)
+
     parameters = filter(lambda p: p.requires_grad, tnet.parameters())
     optimizer = optim.Adam(parameters, lr=args.lr)
 
@@ -286,6 +288,7 @@ def test(test_loader, tnet, plot_roc=False, save_path=None):
     tnet.embeddingnet.eval()
     tnet.embeddingnet.embeddingnet.eval()
 
+    embeddings = []
     # for test/val data we get images only from the data loader
     for batch_idx, images in enumerate(test_loader):
         if args.cuda:
@@ -303,15 +306,15 @@ def test(test_loader, tnet, plot_roc=False, save_path=None):
 
     return total
 
-def save_checkpoint(path, state, is_best, filename='model_best.pth.tar'):
+def save_checkpoint(directory, state, is_best, filename='checkpoint.pth.tar'):
     """Saves checkpoint to disk"""
-    directory = path
+    print("Save checkpoints")
     if not os.path.exists(directory):
         os.makedirs(directory)
-    filename = directory + filename
+    filename = os.path.join(directory, filename)
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, path + 'model_best.pth.tar')
+        shutil.copyfile(filename, os.path.join(directory, 'model_best.pth.tar'))
 
 class TrainData():
     def __init__(self, images, text, has_text, conditions=None):

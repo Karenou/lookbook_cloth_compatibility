@@ -147,6 +147,7 @@ class TripletPolyvoreImageLoader(torch.utils.data.Dataset):
         self.triplet_path = "%s/%s_%s.txt" % (triplet_path, polyvore_split, split)
         self.rootdir = os.path.join(datadir, 'polyvore_outfits', polyvore_split)
         self.text_feat_dim = text_dim
+        self.split = split
         
         print("Load outfit data")
         outfit_data = json.load(open(os.path.join(self.rootdir, '%s.json' % split), 'r'))   
