@@ -3,7 +3,9 @@ import argparse
 import os
 from PIL import Image
 import pandas as pd
+import numpy as np
 import h5py
+import pickle
 
 import torch
 from torchvision import transforms
@@ -54,6 +56,8 @@ parser.add_argument('--sim_t_loss', type=float, default=5e-5, metavar='M',
 parser.add_argument('--sim_i_loss', type=float, default=5e-5, metavar='M',
                     help='parameter for loss for image-image similarity')
 
+parser.add_argument('--typespace_path', default="fashion-compatibility/data/polyvore_outfits/nondisjoint", type=str,
+                    help='path to load typespace.p')
 parser.add_argument('--resume', default='', type=str,
                     help='path to load pretrain model')
 parser.add_argument('--start_epoch', type=int, default=1, metavar='N',
@@ -106,6 +110,7 @@ class ImageDataset(Dataset):
 
         # create a (3, 3, 112, 112) tensor to store the segments
         # use a marker to record which dimension is non-zero
+        # idx of marker to category: 0: 'upper body' (tops), 1: 'lower body' (bottoms), 2: 'full body' (all-body)
         marker = torch.zeros(3)
         imgs = torch.zeros((3, 3, 112, 112))
         
@@ -135,24 +140,49 @@ def compute_score(embeddings):
     if only two vectors: use pairwise two-norm
     if three vectors: use average of pairwise two-norm
     """
-    def compute_distance(v1, v2):
-        distance_vec = torch.nn.functional.pairwise_distance(
-            v1.unsqueeze(0), v2.unsqueeze(0), p=2)
-        return distance_vec
+    n_items = embeddings.shape[0]
+    outfit_score = 0.0
+    num_comparisons = 0
+    for i in range(n_items - 1):
+        for j in range(i + 1, n_items):
+            outfit_score += torch.nn.functional.pairwise_distance(embeddings[i], embeddings[j], 2)
+            num_comparisons += 1
+    
+    outfit_score /= num_comparisons
+    outfit_score = outfit_score.cpu().detach().numpy()
+    return outfit_score
 
-    if embeddings.shape[0] == 2:
-        # shape (1, 67)
-        outfit_vec = compute_distance(embeddings[0], embeddings[1])
-        score = torch.norm(outfit_vec)
-    else:
-        outfit_vec_1 = compute_distance(embeddings[0], embeddings[1])
-        outfit_vec_2 = compute_distance(embeddings[0], embeddings[2])
-        outfit_vec_3 = compute_distance(embeddings[1], embeddings[2])
-        # shape (3, 67)
-        outfit_vec = torch.concat([outfit_vec_1, outfit_vec_2, outfit_vec_3])
-        score = torch.norm(torch.mean(outfit_vec, dim=0))
-    score = score.cpu().detach().numpy()
-    return score
+
+def load_typespaces(rootdir):
+    """
+    loads a mapping of pairs of types to the embedding used to compare them
+    """
+    typespace_fn = os.path.join(rootdir, 'typespaces.p')
+    typespaces = pickle.load(open(typespace_fn, 'rb'))
+    ts = {}
+    for index, t in enumerate(typespaces):
+        ts[t] = index
+
+    typespaces = ts
+    return typespaces
+
+
+def get_typespace(typespaces, anchor_id, pair_id):
+    """ Returns the index of the type specific embedding
+        for the pair of item types provided as input
+    @param typespaces: a dict maps pair of categories to type-pair index
+    @param anchor: category of anchor image, 0: tops, 1: bottoms, 2: all-body
+    @param pair: category of paired image
+    """
+    idx2type = {0: "tops", 1: "bottoms", 2: "all-body"}
+    anchor_type = idx2type[anchor_id]
+    pair_type = idx2type[pair_id]
+
+    query = (anchor_type, pair_type)
+    if query not in typespaces:
+        query = (pair_type, anchor_type)
+
+    return typespaces[query]
 
 
 if __name__ == "__main__":
@@ -197,6 +227,9 @@ if __name__ == "__main__":
 
     cudnn.benchmark = True
 
+    # load type_spaces
+    type_spaces = load_typespaces(args.typespace_path)
+
     print("Start embedding")
     embed_idx_mapping = []
     scores = []
@@ -207,26 +240,43 @@ if __name__ == "__main__":
     for user_id, look_id, marker, imgs in test_loader:
         if batch_idx % args.log_interval == 0:
             print("Process %d / %d" % (batch_idx, len(dataset)))
-        
-        marker = marker[0]
         batch_idx += 1
+
         if args.cuda:
             imgs = imgs.cuda()
-
-        embeddings = []
         imgs = Variable(imgs.squeeze(axis=0))
+        
+        embeddings = []
         n_items = 0
-        for item_id in range(3):
-            if marker[item_id] == 1:
-                # embedding shape: (1, num_rand_embed + 1, 64)
-                # the last dimension in the second axis is general embeddeding, while the previous is type-specific embedding
-                embedding = tnet.embeddingnet(imgs[item_id].unsqueeze(axis=0)).data
-                embeddings.append(embedding)
-                embed_idx_mapping.append([user_id.item(), look_id.item(), item_id+1, n_items])
-                n_items += 1
+        anchor_ids = torch.where(marker[0] > 0)[0].detach().numpy()
+        for anchor_id in anchor_ids:
+            # all_embedding shape: (num_rand_embed + 1, 64)
+            # the last dimension in the second axis is general embeddeding, while the previous is type-specific embedding
+            all_embedding = torch.squeeze(tnet.embeddingnet(imgs[anchor_id].unsqueeze(axis=0)).data, dim=0)
+            
+            # get type-specific embedding
+            type_embedding = None
+            if len(anchor_ids) == 1:
+                # only one item
+                condition = get_typespace(type_spaces, anchor_id, anchor_id)
+                type_embedding = all_embedding[condition].unsqueeze(0)
+            else:
+                for pair_id in np.where(anchor_ids != anchor_id)[0]:
+                    condition = get_typespace(type_spaces, anchor_id, pair_id)
+                    embedding = all_embedding[condition].unsqueeze(0)
+                    if type_embedding is None:
+                        type_embedding = embedding
+                    else:
+                        type_embedding += embedding
+
+                type_embedding /= (len(anchor_ids) - 1)
+            
+            embeddings.append(type_embedding)
+            embed_idx_mapping.append([user_id.item(), look_id.item(), anchor_id+1, n_items])
+            n_items += 1
 
         # write the embeded vectors to hdf5 with path: 'user_id/look_id'
-        # shape: (n_items, num_rand_embed + 1, 64)
+        # shape: (n_items, 64)
         embeddings = torch.concat(embeddings)
         embed_hdf5 = write_to_hdfs(embed_hdf5, embeddings, user_id.item(), look_id.item())
 
