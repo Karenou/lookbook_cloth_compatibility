@@ -1,6 +1,6 @@
 # README
 
-This repo is for a research project about prediction of fashion compatibility, supervised by professor June Shi, Department of Marketing, HKUST SBM.
+This repo contains the source code used in the paper  [**How Do Fast Fashion Copycats Affect the Popularity of Premium Brands? Evidence from Social Media**](https://repository.hkust.edu.hk/ir/Record/1783.1-125655), authored by professor June Shi, Department of Marketing, HKUST SBM and published in Journal of Market Research, March 2023.
 
 ## Data source
 The data was collected from https://lookbook.nu/. Datasets 2 and 3 can be linked by user id. 
